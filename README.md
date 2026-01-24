@@ -114,6 +114,19 @@ Advanced architectures (multiband, mid-side, adaptive DSP) are intentionally exc
 
 ---
 
+## Project Status
+
+This repository is provided as a **reference implementation**.
+
+- The design is considered **feature-complete and frozen**
+- No active development or roadmap is planned
+- Issues and pull requests are currently not expected
+
+The repository may be updated in the future if a new major revision is released.
+
+---
+
 ## License
 
 MIT License
+

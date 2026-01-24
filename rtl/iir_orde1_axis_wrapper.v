@@ -1,34 +1,47 @@
 `timescale 1ns / 1ps
 
+// ============================================================================
+// iir_orde1_axis_wrapper
+// ---------------------------------------------------------------------------
+// AXI-Stream + AXI-Lite wrapper for a stereo 1st-order IIR filter core.
+//
+// - Stereo data packed as {Left[15:0], Right[15:0]}
+// - AXI-Lite used for runtime control and coefficient updates
+// - One-sample-per-cycle throughput when enabled
+// - One-cycle processing latency
+// ============================================================================
+
 module iir_orde1_axis_wrapper #(
     parameter integer C_S_AXI_DATA_WIDTH = 32,
     parameter integer C_S_AXI_ADDR_WIDTH = 4,
-    parameter integer DATA_WIDTH         = 32  // Fixed 32-bit (2x16) for Stereo
+    parameter integer DATA_WIDTH         = 32  // Fixed 32-bit stereo stream
 )(
+    // ------------------------------------------------------------------------
     // Global Clock & Reset
-    input wire  aclk,
-    input wire  aresetn, // Active Low
+    // ------------------------------------------------------------------------
+    input  wire aclk,
+    input  wire aresetn,  // Active-low reset
 
-    // ---------------------------------------------------------------------
-    // AXI4-Stream Slave Interface (Input Data)
-    // Format: [31:16] = Left Channel, [15:0] = Right Channel
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // AXI4-Stream Slave Interface (Input)
+    // [31:16] Left channel, [15:0] Right channel
+    // ------------------------------------------------------------------------
     input  wire [DATA_WIDTH-1:0] s_axis_tdata,
     input  wire                  s_axis_tvalid,
     output wire                  s_axis_tready,
     input  wire                  s_axis_tlast,
 
-    // ---------------------------------------------------------------------
-    // AXI4-Stream Master Interface (Output Data)
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // AXI4-Stream Master Interface (Output)
+    // ------------------------------------------------------------------------
     output wire [DATA_WIDTH-1:0] m_axis_tdata,
     output reg                   m_axis_tvalid,
     input  wire                  m_axis_tready,
     output reg                   m_axis_tlast,
 
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     // AXI4-Lite Slave Interface (Control & Coefficients)
-    // ---------------------------------------------------------------------
+    // ------------------------------------------------------------------------
     input  wire [C_S_AXI_ADDR_WIDTH-1:0] s_axi_awaddr,
     input  wire                          s_axi_awvalid,
     output wire                          s_axi_awready,
@@ -49,16 +62,20 @@ module iir_orde1_axis_wrapper #(
 );
 
     // =========================================================================
-    // 1. Internal Parameters & Signals
+    // 1. AXI-Lite Registers
     // =========================================================================
-    
-    // Register Map (Shared for both channels)
-    reg [C_S_AXI_DATA_WIDTH-1:0] reg_ctrl; // 0x00
-    reg [C_S_AXI_DATA_WIDTH-1:0] reg_a0;   // 0x04
-    reg [C_S_AXI_DATA_WIDTH-1:0] reg_a1;   // 0x08
-    reg [C_S_AXI_DATA_WIDTH-1:0] reg_b1;   // 0x0C
+    // Register map:
+    // 0x00 : Control   [0]=Enable, [1]=Clear state
+    // 0x04 : a0 coefficient (Q1.15)
+    // 0x08 : a1 coefficient (Q1.15)
+    // 0x0C : b1 coefficient (Q1.15)
 
-    // AXI-Lite Handshake Signals
+    reg [C_S_AXI_DATA_WIDTH-1:0] reg_ctrl;
+    reg [C_S_AXI_DATA_WIDTH-1:0] reg_a0;
+    reg [C_S_AXI_DATA_WIDTH-1:0] reg_a1;
+    reg [C_S_AXI_DATA_WIDTH-1:0] reg_b1;
+
+    // AXI-Lite handshake signals
     reg axi_awready;
     reg axi_wready;
     reg [1:0] axi_bresp;
@@ -66,58 +83,58 @@ module iir_orde1_axis_wrapper #(
     reg axi_arready;
     reg [C_S_AXI_DATA_WIDTH-1:0] axi_rdata;
     reg axi_rvalid;
-    
-    reg aw_en; 
 
-    // I/O Connections
+    reg aw_en;  // Single outstanding write control
+
+    // AXI-Lite outputs
     assign s_axi_awready = axi_awready;
     assign s_axi_wready  = axi_wready;
     assign s_axi_bresp   = axi_bresp;
     assign s_axi_bvalid  = axi_bvalid;
     assign s_axi_arready = axi_arready;
     assign s_axi_rdata   = axi_rdata;
-    assign s_axi_rresp   = 2'b00; 
+    assign s_axi_rresp   = 2'b00;  // OKAY
     assign s_axi_rvalid  = axi_rvalid;
 
     // =========================================================================
-    // 2. AXI-Lite Write Logic (Independent AW/W, simplified single outstanding transaction)
+    // 2. AXI-Lite Write Channel
     // =========================================================================
     always @(posedge aclk) begin
-        if (aresetn == 1'b0) begin
+        if (!aresetn) begin
             axi_awready <= 1'b0;
             axi_wready  <= 1'b0;
             axi_bvalid  <= 1'b0;
             axi_bresp   <= 2'b0;
             aw_en       <= 1'b1;
-            reg_ctrl    <= 32'h0000_0001; // Default Enable=1
+
+            reg_ctrl    <= 32'h0000_0001; // Enabled by default
             reg_a0      <= 32'd0;
             reg_a1      <= 32'd0;
             reg_b1      <= 32'd0;
         end else begin
-            // Address Handshake
-            if (~axi_awready && s_axi_awvalid && s_axi_wvalid && aw_en) begin
-                axi_awready <= 1'b1;
-                aw_en       <= 1'b0; 
-            end else if (~axi_awready && s_axi_awvalid && aw_en) begin
+            // Address channel
+            if (~axi_awready && s_axi_awvalid && aw_en) begin
                 axi_awready <= 1'b1;
                 aw_en       <= 1'b0;
             end else begin
                 axi_awready <= 1'b0;
             end
 
-            // Data Handshake
-            if (~axi_wready && s_axi_wvalid && s_axi_awvalid && aw_en) begin
-                 axi_wready <= 1'b1;
-            end else if (~axi_wready && s_axi_wvalid && (axi_awready || ~aw_en)) begin
-                 axi_wready <= 1'b1;
+            // Write data channel
+            if (~axi_wready && s_axi_wvalid) begin
+                axi_wready <= 1'b1;
             end else begin
-                 axi_wready <= 1'b0;
+                axi_wready <= 1'b0;
             end
 
-            // Register Update
-            if (axi_awready && s_axi_awvalid && axi_wready && s_axi_wvalid && ~axi_bvalid) begin
+            // Register write
+            if (axi_awready && s_axi_awvalid &&
+                axi_wready  && s_axi_wvalid &&
+                ~axi_bvalid) begin
+
                 axi_bvalid <= 1'b1;
-                axi_bresp  <= 2'b0;
+                axi_bresp  <= 2'b00;
+
                 case (s_axi_awaddr[3:2])
                     2'h0: reg_ctrl <= s_axi_wdata;
                     2'h1: reg_a0   <= s_axi_wdata;
@@ -127,22 +144,16 @@ module iir_orde1_axis_wrapper #(
                 endcase
             end else if (s_axi_bready && axi_bvalid) begin
                 axi_bvalid <= 1'b0;
-                if (s_axi_awvalid && axi_awready) 
-                    aw_en <= 1'b0; 
-                else
-                    aw_en <= 1'b1;
-            end else begin
-                if ((axi_awready && s_axi_awvalid) && ~axi_bvalid) 
-                    aw_en <= 1'b0;
+                aw_en      <= 1'b1;
             end
         end
     end
 
     // =========================================================================
-    // 3. AXI-Lite Read Logic
+    // 3. AXI-Lite Read Channel
     // =========================================================================
     always @(posedge aclk) begin
-        if (aresetn == 1'b0) begin
+        if (!aresetn) begin
             axi_arready <= 1'b0;
             axi_rvalid  <= 1'b0;
             axi_rdata   <= 32'd0;
@@ -168,36 +179,31 @@ module iir_orde1_axis_wrapper #(
     end
 
     // =========================================================================
-    // 4. Dual Channel IIR Instantiation (STEREO)
+    // 4. Stereo IIR Core Integration
     // =========================================================================
-    wire core_reset;
-    wire core_enable_signal;
-    wire soft_clear;
-    wire soft_enable_bit;
-    
-    // Control Signal Decoding
-    assign soft_enable_bit = reg_ctrl[0];
-    assign soft_clear      = reg_ctrl[1];
-    assign core_reset      = ~aresetn; 
+    wire soft_enable_bit = reg_ctrl[0];
+    wire soft_clear      = reg_ctrl[1];
+    wire core_reset      = ~aresetn;
 
-    // Handshake: Same as mono, since both L/R processed in lockstep
-    wire axis_handshake_ok;
-    assign axis_handshake_ok = s_axis_tvalid && (m_axis_tready || !m_axis_tvalid);
-    
-    // Core Enable
-    assign core_enable_signal = axis_handshake_ok && soft_enable_bit;
-    assign s_axis_tready      = (m_axis_tready || !m_axis_tvalid) && soft_enable_bit;
+    // AXI-Stream handshake condition
+    wire axis_handshake_ok =
+        s_axis_tvalid && (m_axis_tready || !m_axis_tvalid);
 
-    // --- SPLIT DATA ---
-    // Latency: 1 clock cycle from input sample to output sample (per channel)
-    wire signed [15:0] data_in_L = s_axis_tdata[31:16]; // High Word
-    wire signed [15:0] data_in_R = s_axis_tdata[15:0];  // Low Word
+    wire core_enable_signal =
+        axis_handshake_ok && soft_enable_bit;
+
+    assign s_axis_tready =
+        (m_axis_tready || !m_axis_tvalid) && soft_enable_bit;
+
+    // Input sample unpacking
+    wire signed [15:0] data_in_L = s_axis_tdata[31:16];
+    wire signed [15:0] data_in_R = s_axis_tdata[15:0];
 
     wire signed [15:0] data_out_L;
     wire signed [15:0] data_out_R;
 
-    // --- LEFT CHANNEL CORE ---
-    iir_orde1_core #( .ACC_W(64) ) inst_core_left (
+    // Left channel core
+    iir_orde1_core #(.ACC_W(64)) core_left (
         .clk        (aclk),
         .rst        (core_reset),
         .en         (core_enable_signal),
@@ -209,36 +215,33 @@ module iir_orde1_axis_wrapper #(
         .b1         (reg_b1[15:0])
     );
 
-    // --- RIGHT CHANNEL CORE ---
-    iir_orde1_core #( .ACC_W(64) ) inst_core_right (
+    // Right channel core
+    iir_orde1_core #(.ACC_W(64)) core_right (
         .clk        (aclk),
         .rst        (core_reset),
         .en         (core_enable_signal),
         .clear_state(soft_clear),
         .x_in       (data_in_R),
         .y_out      (data_out_R),
-        .a0         (reg_a0[15:0]), // Shared Coefficient
-        .a1         (reg_a1[15:0]), // Shared Coefficient
-        .b1         (reg_b1[15:0])  // Shared Coefficient
+        .a0         (reg_a0[15:0]),
+        .a1         (reg_a1[15:0]),
+        .b1         (reg_b1[15:0])
     );
 
     // =========================================================================
-    // 5. Output Logic (Combine L/R)
+    // 5. AXI-Stream Output Control
     // =========================================================================
-    
     always @(posedge aclk) begin
         if (!aresetn) begin
             m_axis_tvalid <= 1'b0;
             m_axis_tlast  <= 1'b0;
-        end else begin
-            if (m_axis_tready || !m_axis_tvalid) begin
-                m_axis_tvalid <= s_axis_tvalid && soft_enable_bit;
-                m_axis_tlast  <= s_axis_tlast;
-            end
+        end else if (m_axis_tready || !m_axis_tvalid) begin
+            m_axis_tvalid <= s_axis_tvalid && soft_enable_bit;
+            m_axis_tlast  <= s_axis_tlast;
         end
     end
-    
-    // Packing ulang Output: [31:16] L, [15:0] R
+
+    // Output sample packing
     assign m_axis_tdata = {data_out_L, data_out_R};
 
 endmodule

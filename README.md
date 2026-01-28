@@ -114,6 +114,22 @@ Advanced architectures (multiband, mid-side, adaptive DSP) are intentionally exc
 
 ---
 
+## Design Notes
+
+- Filter coefficients are configured via **AXI-Lite registers** instead of being
+  hardcoded, allowing runtime reconfiguration without resynthesis and making the
+  IP reusable for different first-order filter responses.
+
+- No coefficient generator is included by design. Users are free to generate
+  coefficients using any tool or method, as long as values are provided in
+  **Q1.15 fixed-point format**.
+
+- The provided bare-metal application serves only as a minimal reference for
+  AXI-Lite and AXI DMA integration. The primary focus of this repository is the
+  **RTL architecture and deterministic DSP behavior**.
+
+---
+
 ## Project Status
 
 This repository is provided as a **reference implementation**.
@@ -129,5 +145,6 @@ The repository may be updated in the future if a new major revision is released.
 ## License
 
 Licensed under MIT. Provided as-is, without warranty.
+
 
 

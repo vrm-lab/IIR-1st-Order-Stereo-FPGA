@@ -8,6 +8,7 @@ Target platform: **AMD Kria KV260**
 Focus: **clean architecture, reproducible design, and hardware–software co-design**
 
 This design operates in a fully real-time, sample-by-sample streaming architecture with deterministic latency.
+
 ---
 
 ## Features
@@ -146,6 +147,7 @@ The repository may be updated in the future if a new major revision is released.
 ## License
 
 Licensed under MIT. Provided as-is, without warranty.
+
 
 
 
